@@ -1,0 +1,215 @@
+- hosts: db
+  become: yes
+  tasks:
+    - name: Import MongoDB public key
+      apt_key:
+        url: https://www.mongodb.org/static/pgp/server-7.0.asc
+        state: present
+
+    - name: Add MongoDB repository
+      apt_repository:
+        repo: "deb [ arch=amd64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse"
+        state: present
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install MongoDB (server + shell)
+      apt:
+        name: mongodb-org
+        state: present
+
+    - name: Ensure mongosh is installed
+      apt:
+        name: mongodb-mongosh
+        state: present
+
+    - name: Configure MongoDB to bind to all interfaces
+      replace:
+        path: /etc/mongod.conf
+        regexp: '  bindIp: 127\.0\.0\.1'
+        replace: '  bindIp: 0.0.0.0'
+
+    - name: Restart MongoDB to apply config changes
+      systemd:
+        name: mongod
+        state: restarted
+
+    - name: Start and enable MongoDB
+      systemd:
+        name: mongod
+        state: started
+        enabled: yes
+
+    - name: Secure MongoDB - create user
+      shell: |
+        mongosh --eval 'use travelmemory; db.createUser({user:"mernuser", pwd:"securepassword", roles:["readWrite"]})'
+      args:
+        executable: /bin/bash
+      ignore_errors: yes   # avoids failure if user already exists
+
+- hosts: web
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Node.js 18 from NodeSource
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+      args:
+        executable: /bin/bash
+
+    - name: Install Node.js, git, Nginx, ufw, and build-essential
+      apt:
+        name: [nodejs, git, nginx, ufw, build-essential]
+        state: present
+
+    - name: Install PM2 globally
+      npm:
+        name: pm2
+        global: yes
+        state: present
+
+    - name: Clone MERN repo
+      git:
+        repo: https://github.com/UnpredictablePrashant/TravelMemory.git
+        dest: /home/ubuntu/TravelMemory
+        version: HEAD
+        force: yes
+
+    - name: Ensure frontend directory ownership
+      file:
+        path: /home/ubuntu/TravelMemory/frontend
+        owner: ubuntu
+        group: ubuntu
+        recurse: yes
+
+    - name: Install frontend dependencies
+      command: npm ci --prefer-offline --no-audit
+      args:
+        chdir: /home/ubuntu/TravelMemory/frontend
+      async: 1800
+      poll: 30
+
+    - name: Build frontend
+      shell: |
+        cd /home/ubuntu/TravelMemory/frontend
+        npx update-browserslist-db@latest --update-db || true
+        REACT_APP_BACKEND_URL=/trip CI=false GENERATE_SOURCEMAP=false NODE_OPTIONS=--max-old-space-size=4096 npm run build 2>&1 | tee /tmp/frontend-build.log
+      args:
+        executable: /bin/bash
+      async: 3600
+      poll: 30
+
+    - name: Fix frontend build permissions for Nginx
+      shell: |
+        chown -R ubuntu:www-data /home/ubuntu/TravelMemory/frontend/build
+        chmod -R o+rX /home/ubuntu/TravelMemory/frontend/build
+        chmod o+X /home/ubuntu
+        chmod o+X /home/ubuntu/TravelMemory
+        chmod o+X /home/ubuntu/TravelMemory/frontend
+      args:
+        executable: /bin/bash
+
+    - name: Install backend dependencies
+      command: npm install
+      args:
+        chdir: /home/ubuntu/TravelMemory/backend
+
+    - name: Configure environment variables
+      copy:
+        dest: /home/ubuntu/TravelMemory/backend/.env
+        content: |
+          PORT=3000
+          MONGO_URI=mongodb://mernuser:securepassword@{{ hostvars[groups['db'][0]]['ansible_host'] | default(hostvars[groups['db'][0]]['inventory_hostname']) }}:27017/travelmemory
+
+    - name: Start backend with PM2 (force restart if already running)
+      command: pm2 start index.js --name travel-backend -f
+      args:
+        chdir: /home/ubuntu/TravelMemory/backend
+
+    - name: Save PM2 process list
+      command: pm2 save
+
+    - name: Enable PM2 startup script
+      command: pm2 startup systemd
+
+    # Nginx configuration
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Configure Nginx reverse proxy for MERN
+      copy:
+        dest: /etc/nginx/sites-available/mern.conf
+        content: |
+          server {
+            listen 80;
+            server_name _;
+            
+            location / {
+              root /home/ubuntu/TravelMemory/frontend/build;
+              index index.html;
+              try_files $uri /index.html;
+            }
+
+            location /trip {
+              proxy_pass http://127.0.0.1:3000;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection 'upgrade';
+              proxy_set_header Host $host;
+              proxy_cache_bypass $http_upgrade;
+            }
+
+            location /api {
+              proxy_pass http://127.0.0.1:3000;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection 'upgrade';
+              proxy_set_header Host $host;
+              proxy_cache_bypass $http_upgrade;
+            }
+          }
+
+    - name: Enable MERN site
+      file:
+        src: /etc/nginx/sites-available/mern.conf
+        dest: /etc/nginx/sites-enabled/mern.conf
+        state: link
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+- hosts: all
+  become: true
+  tasks:
+    - name: Disable root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: Restart ssh
+
+    - name: Allow only required ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - 22
+        - 80
+        - 27017
+
+  handlers:
+    - name: Restart ssh
+      service:
+        name: ssh
+        state: restarted
+

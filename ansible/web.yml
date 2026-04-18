@@ -1,0 +1,54 @@
+- hosts: web
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Node.js and npm
+      apt:
+        name: [nodejs, npm]
+        state: present
+
+    - name: Install git
+      apt:
+        name: git
+        state: present
+
+    - name: Install PM2 globally
+      npm:
+        name: pm2
+        global: yes
+        state: present
+
+    - name: Clone MERN repo
+      git:
+        repo: https://github.com/UnpredictablePrashant/TravelMemory.git
+        dest: /home/ubuntu/TravelMemory
+        version: HEAD
+
+    - name: Install frontend dependencies
+      command: npm install
+      args:
+        chdir: /home/ubuntu/TravelMemory/frontend
+
+    - name: Build frontend
+      command: npm run build
+      args:
+        chdir: /home/ubuntu/TravelMemory/frontend
+
+    - name: Install backend dependencies
+      command: npm install
+      args:
+        chdir: /home/ubuntu/TravelMemory/backend
+
+    - name: Start backend server with PM2
+      command: pm2 start server.js --name travel-backend
+      args:
+        chdir: /home/ubuntu/TravelMemory/backend
+
+    - name: Save PM2 process list
+      command: pm2 save
+
+    - name: Enable PM2 startup script
+      command: pm2 startup systemd -y

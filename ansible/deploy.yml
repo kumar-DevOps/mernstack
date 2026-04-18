@@ -1,0 +1,14 @@
+- hosts: web
+  become: yes
+  tasks:
+    - name: Set environment variables
+      copy:
+        dest: /home/ubuntu/TravelMemory/.env
+        content: |
+          PORT=3000
+          MONGO_URI=mongodb://mernuser:securepassword@10.0.2.36:27017/travelmemory
+
+    - name: Start Node.js app
+      shell: |
+        cd /home/ubuntu/TravelMemory
+        nohup npm start &
