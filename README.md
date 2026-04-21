@@ -1,15 +1,5 @@
 # MERN Stack Application Deployment Troubleshooting and Resolution Report
 
----
-
-**Prepared by:** GitHub Copilot Assistant  
-**Date:** April 18, 2026  
-**Project:** Travel Memory MERN Application  
-**Infrastructure:** AWS EC2 (Ubuntu 22.04)  
-**Tools:** Ansible, PM2, Nginx, MongoDB  
-
----
-
 ## Executive Summary
 
 This report details the systematic troubleshooting and resolution of deployment issues encountered while automating the deployment of a MERN stack application using Ansible. The application, Travel Memory, allows users to record and share travel experiences. Through iterative debugging and configuration fixes, all critical issues were resolved, resulting in a fully functional deployed application.
